@@ -210,27 +210,31 @@ AC_MSG_RESULT($gcc_pure)
 fi # End of gcc-specific part.
 
 
-# It's early 2019, and gcc's charconv supports integers but not yet floats.
+# It's mid-2019, and gcc's charconv supports integers but not yet floats.
 # So for now, we test for int and float conversion... separately.
 #
-# It's worse for clang, which compiles the integer conversions but then fails
-# at link time because of a missing symbol "__muloti4" when compiling
-# "long long" code.  I couldn't resolve that symbol by adding -lm either.  So
-# don't just compile these tests; link them as well.
+# It's worse for older clang versions, which compile the integer conversions
+# but then fail at link time because of a missing symbol "__muloti4" with the
+# "long long" version.  I couldn't resolve that symbol by adding -lm either.
+# So don't just compile these tests; link them as well.
 AC_MSG_CHECKING([for C++17 charconv integer conversion])
 have_charconv_int=yes
 AC_LINK_IFELSE(
 	[AC_LANG_PROGRAM(
-		[#include <charconv>],
+		[
+			#include <charconv>
+			#include <iterator>
+		],
 		[[
 			char z[100];
-			using ull = unsigned long long;
-			auto rt = std::to_chars(z, z + sizeof(z), ull{0});
+			auto rt = std::to_chars(
+				std::begin(z), std::end(z), 9ULL);
 			if (rt.ec != std::errc{}) return 1;
-			ull n;
-			auto rf = std::from_chars(z, z + sizeof(z), n);
+			unsigned long long n;
+			auto rf = std::from_chars(
+				std::cbegin(z), std::cend(z), n);
 			if (rf.ec != std::errc{}) return 2;
-			return int(n)
+			return (n == 9ULL) ? 0 : 1
 		]]
 	)],
 	AC_DEFINE(
@@ -244,18 +248,21 @@ AC_MSG_CHECKING([for C++17 charconv floating-point conversion])
 have_charconv_float=yes
 AC_LINK_IFELSE(
 	[AC_LANG_PROGRAM(
-		[#include <charconv>],
+		[
+                        #include <charconv>
+                        #include <ciso646>
+                        #include <iterator>
+                ],
 		[[
 			char z[100];
-			using ld = long double;
 			auto rt = std::to_chars(
-				z, z + sizeof(z), ld{0.1},
-				std::chars_format::general);
+				std::begin(z), std::end(z), 3.14159L);
 			if (rt.ec != std::errc{}) return 1;
-			ld n;
-			auto rf = std::from_chars(z, z + sizeof(z), n);
+			long double n;
+			auto rf = std::from_chars(
+                                std::cbegin(z), std::cend(z), n);
 			if (rf.ec != std::errc{}) return 2;
-			return int(n)
+			return (n > 3 and n < 4) ? 0 : 1
 		]]
 	)],
 	AC_DEFINE(
@@ -266,7 +273,7 @@ AC_LINK_IFELSE(
 AC_MSG_RESULT($have_charconv_float)
 
 # Doing my own test for poll() for now.  The test built into autoconf-archive
-# triggers a stupid warning for an unused variable.
+# triggers stupid warnings.
 # TODO: Try newer version of autoconf-archive.
 #AX_HAVE_POLL(
 #        [AX_CONFIG_FEATURE_ENABLE(poll)],
@@ -274,7 +281,7 @@ AC_MSG_RESULT($have_charconv_float)
 #AX_CONFIG_FEATURE(
 #	[poll],
 #	[System supports poll().],
-#	[HAVE_POLL],
+#	[PQXX_HAVE_POLL],
 #	[System supports poll().])
 AC_MSG_CHECKING([for poll()])
 ax_cv_have_poll=yes
@@ -294,9 +301,7 @@ AC_MSG_RESULT($ax_cv_have_poll)
 
 if test "$ax_cv_have_poll" != "yes"
 then
-# No poll(); try for select() instead.
-select_h=no
-AC_CHECK_HEADERS([sys/select.h], [select_h=yes])
+# No poll(); we'll fall back to select().
 
 # Some systems keep select() in a separate library which is not linked by
 # default.  See if we need one of those.
@@ -325,9 +330,6 @@ the config.log file for more clues as to why this failed.
 fi
 
 fi # No poll()
-
-
-AC_CHECK_HEADERS([sys/time.h])
 
 
 # Find PostgreSQL includes and libraries

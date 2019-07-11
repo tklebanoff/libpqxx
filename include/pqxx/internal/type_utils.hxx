@@ -17,17 +17,17 @@
 
 namespace pqxx::internal
 {
-/// Replicate std::void_t<> (available in C++17).
-template<typename... T> using void_t = void;
-
 /// Extract the content type held by an `optional`-like wrapper type.
-template<typename T> using inner_type = typename std::remove_reference<
-  decltype(*std::declval<T>())
+/* Replace nested `std::remove_*`s with `std::remove_cvref` in C++20 */
+template<typename T> using inner_type = typename std::remove_cv<
+  typename std::remove_reference<
+    decltype(*std::declval<T>())
+  >::type
 >::type;
 
 /// Does the given type have an `operator *()`?
 template<typename T, typename = void> struct is_derefable : std::false_type {};
-template<typename T> struct is_derefable<T, void_t<
+template<typename T> struct is_derefable<T, std::void_t<
   // Disable for arrays so they don't erroneously decay to pointers.
   inner_type<typename std::enable_if<not std::is_array<T>::value, T>::type>
 >> : std::true_type {};
@@ -62,7 +62,7 @@ template<typename T> struct is_tuple<
 template<typename T, typename = void> struct is_container : std::false_type {};
 template<typename T> struct is_container<
   T,
-  void_t<
+  std::void_t<
     decltype(std::begin(std::declval<T>())),
     decltype(std::end(std::declval<T>())),
     // Some people might implement a `std::tuple<>` specialization that is
@@ -150,34 +150,31 @@ template<typename T> struct string_traits<
   typename std::enable_if<internal::is_optional<T>::value>::type
 >
 {
-private:
-  using I = internal::inner_type<T>;
-public:
-  static constexpr const char *name() noexcept
-    { return string_traits<I>::name(); }
   static constexpr bool has_null() noexcept { return true; }
   static bool is_null(const T& v)
     { return (not v || string_traits<I>::is_null(*v)); }
   static constexpr T null() { return internal::null_value<T>(); }
-  static void from_string(const char Str[], T &Obj)
+  static void from_string(std::string_view str, T &obj)
   {
-    if (not Str) Obj = null();
+    if (str.data() == nullptr) obj = null();
     else
     {
       I inner;
-      string_traits<I>::from_string(Str, inner);
+      string_traits<I>::from_string(str, inner);
       // Utilize existing memory if possible (e.g. for pointer types).
-      if (Obj) *Obj = inner;
+      if (obj) *obj = inner;
       // Important to assign to set valid flag for smart optional types.
-      else Obj = internal::make_optional<T>(inner);
+      else obj = internal::make_optional<T>(inner);
     }
   }
   static std::string to_string(const T& Obj)
   {
-    if (is_null(Obj)) internal::throw_null_conversion(name());
+    if (is_null(Obj)) internal::throw_null_conversion(type_name<T>);
     return string_traits<I>::to_string(*Obj);
   }
+
+private:
+  using I = internal::inner_type<T>;
 };
 } // namespace pqxx
-
 #endif

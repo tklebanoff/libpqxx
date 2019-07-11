@@ -17,8 +17,7 @@
 #include "pqxx/compiler-internal-pre.hxx"
 
 #include <stdexcept>
-
-#include "pqxx/util.hxx"
+#include <string>
 
 
 namespace pqxx
@@ -172,6 +171,13 @@ struct PQXX_LIBEXPORT argument_error : std::invalid_argument
 struct PQXX_LIBEXPORT conversion_error : std::domain_error
 {
   explicit conversion_error(const std::string &);
+};
+
+
+/// Could not convert value to string: not enough buffer space.
+struct PQXX_LIBEXPORT conversion_overrun : conversion_error
+{
+  explicit conversion_overrun(const std::string &);
 };
 
 

@@ -1,5 +1,5 @@
 #include "../test_helpers.hxx"
-#include "test_types.hxx"
+#include "../test_types.hxx"
 
 #include <pqxx/stream_from>
 
@@ -54,8 +54,10 @@ void test_nonoptionals(pqxx::connection_base& connection)
   }
   catch (const pqxx::conversion_error &e)
   {
-    std::string what{e.what()};
-    if (what != "Attempt to convert null to int.") throw;
+    std::string
+        what{e.what()},
+        expected{"Attempt to convert null to " + pqxx::type_name<int> + "."};
+    if (what != expected) throw;
     pqxx::test::expected_exception("Could not extract row: " + what);
   }
 

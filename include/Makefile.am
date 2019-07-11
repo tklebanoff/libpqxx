@@ -32,6 +32,7 @@ nobase_include_HEADERS= pqxx/pqxx \
 	pqxx/types pqxx/types.hxx \
 	pqxx/version pqxx/version.hxx \
 	pqxx/internal/callgate.hxx \
+	pqxx/internal/conversions.hxx \
 	pqxx/internal/encoding_group.hxx \
 	pqxx/internal/encodings.hxx \
 	pqxx/internal/libpq-forward.hxx \
@@ -64,4 +65,5 @@ nobase_nodist_include_HEADERS = \
 
 EXTRA_DIST = \
 	pqxx/doc/*.md \
+	pqxx/doc/mainpage.md.template \
 	pqxx/version.hxx.template

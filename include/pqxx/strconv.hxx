@@ -13,74 +13,19 @@
 
 #include "pqxx/compiler-public.hxx"
 
+#include <algorithm>
+#include <cstring>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <typeinfo>
 
+#if __has_include(<charconv>)
+#include <charconv>
+#endif
 
-// TODO: Move helpers to internal header.
-namespace pqxx::internal
-{
-/// Throw exception for attempt to convert null to given type.
-[[noreturn]] PQXX_LIBEXPORT void throw_null_conversion(
-	const std::string &type);
-
-/// Give a human-readable name for a type, at compile time.
-/** Each instantiation contains a static member called @c value which is the
- * type's name, as a string.
- */
-template<typename TYPE> const char *const type_name = nullptr;
-
-#define PQXX_DECLARE_TYPE_NAME(TYPE) \
-  template<> const char *const type_name<TYPE> = #TYPE
-
-PQXX_DECLARE_TYPE_NAME(bool);
-PQXX_DECLARE_TYPE_NAME(short);
-PQXX_DECLARE_TYPE_NAME(unsigned short);
-PQXX_DECLARE_TYPE_NAME(int);
-PQXX_DECLARE_TYPE_NAME(unsigned int);
-PQXX_DECLARE_TYPE_NAME(long);
-PQXX_DECLARE_TYPE_NAME(unsigned long);
-PQXX_DECLARE_TYPE_NAME(long long);
-PQXX_DECLARE_TYPE_NAME(unsigned long long);
-PQXX_DECLARE_TYPE_NAME(float);
-PQXX_DECLARE_TYPE_NAME(double);
-PQXX_DECLARE_TYPE_NAME(long double);
-PQXX_DECLARE_TYPE_NAME(char *);
-PQXX_DECLARE_TYPE_NAME(const char *);
-PQXX_DECLARE_TYPE_NAME(std::string);
-PQXX_DECLARE_TYPE_NAME(const std::string);
-PQXX_DECLARE_TYPE_NAME(std::stringstream);
-PQXX_DECLARE_TYPE_NAME(std::nullptr_t);
-#undef PQXX_DECLARE_TYPE_NAME
-
-template<size_t N> const char *const type_name<char[N]> = "char[]";
-
-
-/// Helper: string traits implementation for built-in types.
-/** These types all look much alike, so they can share much of their traits
- * classes (though templatised, of course).
- *
- * The actual `to_string` and `from_string` are implemented in the library,
- * but the rest is defined inline.
- */
-template<typename TYPE> struct PQXX_LIBEXPORT builtin_traits
-{
-  static constexpr const char *name() noexcept
-	{ return internal::type_name<TYPE>; }
-  static constexpr bool has_null() noexcept { return false; }
-  static constexpr bool is_null(TYPE) { return false; }
-  [[noreturn]] static TYPE null() { throw_null_conversion(name()); }
-  static void from_string(const char Str[], TYPE &Obj);
-  static std::string to_string(TYPE Obj);
-};
-
-
-/// Compute numeric value of given textual digit (assuming that it is a digit)
-constexpr int digit_to_number(char c) noexcept { return c-'0'; }
-constexpr char number_to_digit(int i) noexcept
-	{ return static_cast<char>(i+'0'); }
-} // namespace pqxx::internal
+#include "pqxx/except.hxx"
 
 
 namespace pqxx
@@ -93,49 +38,94 @@ namespace pqxx
  * various C++ types translate to and from their respective PostgreSQL text
  * representations.
  *
- * Each conversion is defined by a specialisation of the @c string_traits
- * template.  This template implements some basic functions to support the
- * conversion, ideally in both directions.
+ * Each conversion is defined by specialisations of certain templates:
+ * @c string_traits, @c to_buf, and @c str.  It gets complicated if you want
+ * top performance, but until you do, all you really need to care about when
+ * converting values between C++ in-memory representations such as @c int and
+ * the postgres string representations is the @c pqxx::to_string and
+ * @c pqxx::from_string functions.
  *
- * If you need to convert a type which is not supported out of the box, define
- * your own @c string_traits specialisation for that type, similar to the ones
- * defined here.  Any conversion code which "sees" your specialisation will now
- * support your conversion.  In particular, you'll be able to read result
- * fields into a variable of the new type.
+ * If you need to convert a type which is not supported out of the box, you'll
+ * need to define your own specialisations for these templates, similar to the
+ * ones defined here and in `pqxx/conversions.hxx`.  Any conversion code which
+ * "sees" your specialisation will now support your conversion.  In particular,
+ * you'll be able to read result fields into a variable of the new type.
  *
  * There is a macro to help you define conversions for individual enumeration
  * types.  The conversion will represent enumeration values as numeric strings.
  */
 //@{
 
-/// Traits class for use in string conversions
-/** Specialize this template for a type that you wish to add to_string and
- * from_string support for.
+// TODO: Do better!  Was having trouble with template variables.
+/// A human-readable name for a type, used in error messages and such.
+/** The default implementation falls back on @c std::type_info::name(), which
+ * isn't necessarily human-friendly.
+ */
+template<typename TYPE> const std::string type_name{typeid(TYPE).name()};
+
+
+/// @addtogroup stringconversion
+//@{
+/// Traits class for use in string conversions.
+/** Specialize this template for a type for which you wish to add to_string
+ * and from_string support.  It indicates whether the type has a natural null
+ * value (if not, consider using @c std::optional for that), and whether a
+ * given value is null, and so on.
  */
 template<typename T, typename = void> struct string_traits;
 
 
-/// Helper: declare a string_traits specialisation for a builtin type.
-#define PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(TYPE) \
-  template<> struct PQXX_LIBEXPORT string_traits<TYPE> : \
-    internal::builtin_traits<TYPE> {};
+/// Return a @c string_view representing value, plus terminating zero.
+/** Produces a @c string_view, which will be null if @c value was null.
+ * Otherwise, it will contain the PostgreSQL string representation for
+ * @c value.
+ *
+ * In addition, if @c value is non-null then the result's @c end() is
+ * guaranteed to be addressable and contain a zero.  This means that you can
+ * also use its @c data() as a C-style string pointer.
+ *
+ * Uses the space from @c begin to @c end as a buffer, if needed.  The
+ * returned string may lie somewhere in that buffer, or it may be a
+ * compile-time constant, or it may be null if value was a null value.  Even
+ * if the string is stored in the buffer, its @c begin() may or may not be
+ * the same as @c begin.
+ *
+ * The @c string_view is guaranteed to be valid as long as the buffer from
+ * @c begin to @c end remains accessible and unmodified.
+ *
+ * @throws pqxx::conversion_overrun if the provided buffer space may not be
+ * enough.  For maximum performance, this is a conservative estimate.  It may
+ * complain about a buffer which is actually large enough for your value, if
+ * an exact check gets too expensive.
+ */
+template<typename T> inline std::string_view
+to_buf(char *begin, char *end, T value);
 
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(bool)
 
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(short)
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(unsigned short)
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(int)
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(unsigned int)
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(long)
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(unsigned long)
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(long long)
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(unsigned long long)
-
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(float)
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(double)
-PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION(long double)
-
-#undef PQXX_DECLARE_STRING_TRAITS_SPECIALIZATION
+/// Value-to-string converter: represent value as a postgres-compatible string.
+/** @warning This feature is experimental.  It may change, or disappear.
+ *
+ * Turns a value of (more or less) any type into its PostgreSQL string
+ * representation.  It keeps the string representation "alive" in memory while
+ * the @c str object exists.  After that, accessing the string becomes
+ * undefined.
+ *
+ * If the value is null, the string value will be null.  That is, its @c data
+ * pointer will be null.
+ *
+ * In situations where convenience matters more than performance, use the
+ * @c to_string functions which create and return a @c std::string.  It's
+ * expensive but convenient.  If you need extreme memory efficiency, consider
+ * using @c to_buf and allocating your own buffer.  In the space between those
+ * two extremes, use @c str.
+ *
+ * @warning One thing you can @a not do with @c str is convert a value in a
+ * temporary object, e.g. @c pqxx::str(value).view().  The result is a
+ * @c std::string_view, which points to a buffer inside the @c str object.
+ * By the time you make use of the result, the @c str and its buffer no longer
+ * exist, and the @c string_view will be pointing to invalid memory.
+ */
+template<typename T> class str;
 
 
 /// Helper class for defining enum conversions.
@@ -155,18 +145,17 @@ struct enum_traits
   using underlying_traits = string_traits<underlying_type>;
 
   static constexpr bool has_null() noexcept { return false; }
-  [[noreturn]] static ENUM null()
-	{ internal::throw_null_conversion("enum type"); }
+  [[noreturn]] inline static ENUM null();
 
-  static void from_string(const char Str[], ENUM &Obj)
+  static void from_string(std::string_view str, ENUM &obj)
   {
     underlying_type tmp;
-    underlying_traits::from_string(Str, tmp);
-    Obj = ENUM(tmp);
+    underlying_traits::from_string(str, tmp);
+    obj = ENUM(tmp);
   }
 
-  static std::string to_string(ENUM Obj)
-	{ return underlying_traits::to_string(underlying_type(Obj)); }
+  static std::string to_string(ENUM obj)
+	{ return underlying_traits::to_string(underlying_type(obj)); }
 };
 
 
@@ -186,96 +175,12 @@ struct enum_traits
 template<> \
 struct string_traits<ENUM> : pqxx::enum_traits<ENUM> \
 { \
-  static constexpr const char *name() noexcept { return #ENUM; } \
   [[noreturn]] static ENUM null() \
-	{ internal::throw_null_conversion(name()); } \
+	{ internal::throw_null_conversion(type_name<ENUM>); } \
 }
 
 
-/// String traits for C-style string ("pointer to const char")
-template<> struct PQXX_LIBEXPORT string_traits<const char *>
-{
-  static constexpr const char *name() noexcept { return "const char *"; }
-  static constexpr bool has_null() noexcept { return true; }
-  static constexpr bool is_null(const char *t) { return t == nullptr; }
-  static constexpr const char *null() { return nullptr; }
-  static void from_string(const char Str[], const char *&Obj) { Obj = Str; }
-  static std::string to_string(const char *Obj) { return Obj; }
-};
-
-/// String traits for non-const C-style string ("pointer to char")
-template<> struct PQXX_LIBEXPORT string_traits<char *>
-{
-  static constexpr const char *name() noexcept { return "char *"; }
-  static constexpr bool has_null() noexcept { return true; }
-  static constexpr bool is_null(const char *t) { return t == nullptr; }
-  static constexpr const char *null() { return nullptr; }
-
-  // Don't allow this conversion since it breaks const-safety.
-  // static void from_string(const char Str[], char *&Obj);
-
-  static std::string to_string(char *Obj) { return Obj; }
-};
-
-/// String traits for C-style string constant ("array of char")
-template<size_t N> struct PQXX_LIBEXPORT string_traits<char[N]>
-{
-  static constexpr const char *name() noexcept { return "char[]"; }
-  static constexpr bool has_null() noexcept { return true; }
-  static constexpr bool is_null(const char t[]) { return t == nullptr; }
-  static constexpr const char *null() { return nullptr; }
-  static std::string to_string(const char Obj[]) { return Obj; }
-};
-
-template<> struct PQXX_LIBEXPORT string_traits<std::string>
-{
-  static constexpr const char *name() noexcept { return "string"; }
-  static constexpr bool has_null() noexcept { return false; }
-  static constexpr bool is_null(const std::string &) { return false; }
-  [[noreturn]] static std::string null()
-	{ internal::throw_null_conversion(name()); }
-  static void from_string(const char Str[], std::string &Obj) { Obj=Str; }
-  static std::string to_string(const std::string &Obj) { return Obj; }
-};
-
-template<> struct PQXX_LIBEXPORT string_traits<const std::string>
-{
-  static constexpr const char *name() noexcept { return "const string"; }
-  static constexpr bool has_null() noexcept { return false; }
-  static constexpr bool is_null(const std::string &) { return false; }
-  [[noreturn]] static const std::string null()
-	{ internal::throw_null_conversion(name()); }
-  static std::string to_string(const std::string &Obj) { return Obj; }
-};
-
-template<> struct PQXX_LIBEXPORT string_traits<std::stringstream>
-{
-  static constexpr const char *name() noexcept { return "stringstream"; }
-  static constexpr bool has_null() noexcept { return false; }
-  static constexpr bool is_null(const std::stringstream &) { return false; }
-  [[noreturn]] static std::stringstream null()
-	{ internal::throw_null_conversion(name()); }
-  static void from_string(const char Str[], std::stringstream &Obj)
-	{ Obj.clear(); Obj << Str; }
-  static std::string to_string(const std::stringstream &Obj)
-	{ return Obj.str(); }
-};
-
-/// Weird case: nullptr_t.  We don't fully support it.
-template<> struct PQXX_LIBEXPORT string_traits<std::nullptr_t>
-{
-  static constexpr const char *name() noexcept { return "nullptr_t"; }
-  static constexpr bool has_null() noexcept { return true; }
-  static constexpr bool is_null(std::nullptr_t) noexcept { return true; }
-  static constexpr std::nullptr_t null() { return nullptr; }
-  static std::string to_string(const std::nullptr_t &)
-	{ return "null"; }
-};
-
-
-// TODO: Implement date conversions.
-
-/// Attempt to convert postgres-generated string to given built-in type
+/// Attempt to convert postgres-generated string to given built-in type.
 /** If the form of the value found in the string does not match the expected
  * type, e.g. if a decimal point is found when converting to an integer type,
  * the conversion fails.  Overflows (e.g. converting "9999999999" to a 16-bit
@@ -288,58 +193,30 @@ template<> struct PQXX_LIBEXPORT string_traits<std::nullptr_t>
  * No whitespace is stripped away.  Only the kinds of strings that come out of
  * PostgreSQL and out of to_string() can be converted.
  */
-template<typename T>
-  inline void from_string(const char Str[], T &Obj)
+template<typename T> inline void from_string(std::string_view str, T &obj)
 {
-  if (Str == nullptr) throw std::runtime_error{"Attempt to read null string."};
-  string_traits<T>::from_string(Str, Obj);
+  if (str.data() == nullptr)
+    throw std::runtime_error{"Attempt to read null string."};
+  string_traits<T>::from_string(str, obj);
 }
 
 
-/// Conversion with known string length (for strings that may contain nuls)
-/** This is only used for strings, where embedded nul bytes should not determine
- * the end of the string.
+/// Convert built-in type to a readable string that PostgreSQL will understand.
+/** This is the convenient way to represent a value as text.  It's also fairly
+ * expensive, since it creates a @c std::string.  The @c pqxx::str class is a
+ * more efficient but slightly less convenient alternative.  Probably.
+ * Depending on the type of value you're trying to convert.
  *
- * For all other types, this just uses the regular, nul-terminated version of
- * from_string().
+ * The conversion does no special formatting, and ignores any locale settings.
+ * The resulting string will be human-readable and in a format suitable for use
+ * in SQL queries.  It won't have niceties such as "thousands separators"
+ * though.
  */
-template<typename T> inline void from_string(const char Str[], T &Obj, size_t)
-{
-  return from_string(Str, Obj);
-}
-
-template<>
-inline void from_string<std::string>(					//[t00]
-	const char Str[],
-	std::string &Obj,
-	size_t len)
-{
-  if (Str == nullptr) throw std::runtime_error{"Attempt to read null string."};
-  Obj.assign(Str, len);
-}
-
-template<typename T>
-inline void from_string(const std::string &Str, T &Obj)
-	{ from_string(Str.c_str(), Obj); }
-
-template<typename T>
-inline void from_string(const std::stringstream &Str, T &Obj)		//[t00]
-	{ from_string(Str.str(), Obj); }
-
-template<> inline void
-from_string(const std::string &Str, std::string &Obj)			//[t46]
-	{ Obj = Str; }
-
-
-/// Convert built-in type to a readable string that PostgreSQL will understand
-/** No special formatting is done, and any locale settings are ignored.  The
- * resulting string will be human-readable and in a format suitable for use in
- * SQL queries.
- */
-template<typename T> std::string to_string(const T &Obj)
-	{ return string_traits<T>::to_string(Obj); }
-
+template<typename T> std::string to_string(const T &obj)
+	{ return string_traits<T>::to_string(obj); }
 //@}
 } // namespace pqxx
 
+
+#include "pqxx/internal/conversions.hxx"
 #endif

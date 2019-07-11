@@ -445,13 +445,13 @@ protected:
   result direct_exec(const char C[]);
 
 private:
-  enum Status
+  enum class status
   {
-    st_nascent,
-    st_active,
-    st_aborted,
-    st_committed,
-    st_in_doubt
+    nascent,
+    active,
+    aborted,
+    committed,
+    in_doubt
   };
 
   PQXX_PRIVATE void CheckPendingError();
@@ -500,11 +500,39 @@ private:
   connection &m_conn;
 
   internal::unique<internal::transactionfocus> m_focus;
-  Status m_status = st_active;
+  status m_status = status::active;
   bool m_registered = false;
   std::string m_pending_error;
 };
 } // namespace pqxx
+
+
+namespace pqxx::internal
+{
+/// The SQL command for starting a given type of transaction.
+template<pqxx::isolation_level isolation, pqxx::write_policy rw>
+extern const char *begin_cmd;
+
+// These are not static members, so "constexpr" does not imply "inline".
+template<> inline constexpr const char *
+begin_cmd<read_committed, write_policy::read_write> =
+	"BEGIN";
+template<> inline constexpr const char *
+begin_cmd<read_committed, write_policy::read_only> =
+	"BEGIN READ ONLY";
+template<> inline constexpr const char *
+begin_cmd<repeatable_read, write_policy::read_write> =
+	"BEGIN ISOLATION LEVEL REPEATABLE READ";
+template<> inline constexpr const char *
+begin_cmd<repeatable_read, write_policy::read_only> =
+	"BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY";
+template<> inline constexpr const char *
+begin_cmd<serializable, write_policy::read_write> =
+	"BEGIN ISOLATION LEVEL SERIALIZABLE";
+template<> inline constexpr const char *
+begin_cmd<serializable, write_policy::read_only> =
+	"BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY";
+} // namespace pqxx::internal
 
 #include "pqxx/compiler-internal-post.hxx"
 #endif

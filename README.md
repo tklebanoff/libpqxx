@@ -39,13 +39,15 @@ recently contributed alternative build, so if you run into problems, your help
 could be crucial in fixing them.
 
 The "Unix-like" section applies to systems that look like Unix: GNU/Linux,
-Apple OSX and the BSD family, AIX, HP-UX, Irix, Solaris, etc.  Microsoft
-Windows with a Unix-like environment such as Cygwin or MinGW installed should
-also work in the same way.
+Apple macOS and the BSD family, AIX, HP-UX, Irix, Solaris, etc.  Even on
+Microsoft Windows, a Unix-like environment such as Cygwin or MinGW installed
+should work.
 
 There is a separate section below for a Visual C++ build on Windows.  It takes
 a bit of work, and if the CMake build works well, we may drop support for the
 Windows/Visual C++ build later.
+
+For any Windows builds though, also see win32/INSTALL.txt.
 
 
 ### Using CMake
@@ -163,6 +165,9 @@ Here, "/home/me/postgres/bin/pg\_config" is just an example of where your
 preferred copy of pg\_config might be.  This would tell the configure script
 that you wish to build a libpqxx based on the postgres version found in
 /home/me/postgres.
+
+If you're running `configure` on a Windows system, make sure that the linker
+can find `ws2_32.lib`.  See the note in win32/INSTALL.txt.
 
 About installing: if you wish to install libpqxx in a custom location, such as
 your home directory /home/me, you can specify this to the configure script

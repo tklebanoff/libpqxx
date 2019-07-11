@@ -21,29 +21,38 @@
 #include <memory>
 #include <stdexcept>
 
-#if defined(_WIN32)
-// Includes for WSAPoll().
+// For WSAPoll():
+#if __has_include(<winsock2.h>)
 #include <winsock2.h>
+#endif
+#if __has_include(<ws2tcpip.h>)
 #include <ws2tcpip.h>
+#endif
+#if __has_include(<mstcpip.h>)
 #include <mstcpip.h>
-#elif defined(HAVE_POLL)
-// Include for poll().
+#endif
+
+// For poll():
+#if __has_include(<poll.h>)
 #include <poll.h>
-#elif defined(HAVE_SYS_SELECT_H)
-// Include for select() on (recent) POSIX systems.
+#endif
+
+// For select() on recent POSIX systems.
+#if __has_include(<sys/select.h>)
 #include <sys/select.h>
-#else
-// Includes for select() according to various older standards.
-#if defined(HAVE_SYS_TYPES_H)
+#endif
+
+// For select() on some older POSIX systems.
+#if __has_include(<sys/types.h>)
 #include <sys/types.h>
 #endif
-#if defined(HAVE_UNISTD_H)
+#if __has_include(<unistd.h>)
 #include <unistd.h>
 #endif
-#endif
-#if defined(HAVE_SYS_TIME_H)
+#if __has_include(<sys/time.h>)
 #include <sys/time.h>
 #endif
+
 
 extern "C"
 {
@@ -298,18 +307,18 @@ void pqxx::connection::add_receiver(pqxx::notification_receiver *T)
 
   // Add to receiver list and attempt to start listening.
   const auto p = m_receivers.find(T->channel());
-  const receiver_list::value_type NewVal(T->channel(), T);
+  const auto new_value = receiver_list::value_type{T->channel(), T};
 
   if (p == m_receivers.end())
   {
     // Not listening on this event yet, start doing so.
-    const std::string LQ("LISTEN " + quote_name(T->channel()));
+    const std::string LQ{"LISTEN " + quote_name(T->channel())};
     check_result(make_result(PQexec(m_conn, LQ.c_str()), LQ));
-    m_receivers.insert(NewVal);
+    m_receivers.insert(new_value);
   }
   else
   {
-    m_receivers.insert(p, NewVal);
+    m_receivers.insert(p, new_value);
   }
 }
 
@@ -321,10 +330,10 @@ void pqxx::connection::remove_receiver(pqxx::notification_receiver *T)
 
   try
   {
-    const std::pair<const std::string, notification_receiver *> needle{
+    auto needle = std::pair<const std::string, notification_receiver *>{
 	T->channel(), T};
     auto R = m_receivers.equal_range(needle.first);
-    const auto i = find(R.first, R.second, needle);
+    auto i = find(R.first, R.second, needle);
 
     if (i == R.second)
     {
@@ -335,7 +344,7 @@ void pqxx::connection::remove_receiver(pqxx::notification_receiver *T)
     {
       // Erase first; otherwise a notification for the same receiver may yet
       // come in and wreak havoc.  Thanks Dragan Milenkovic.
-      const bool gone = (m_conn and (R.second == ++R.first));
+      const bool gone = (R.second == ++R.first);
       m_receivers.erase(i);
       if (gone) exec(("UNLISTEN " + quote_name(needle.first)).c_str());
     }
@@ -781,9 +790,9 @@ std::string pqxx::connection::unesc_raw(const char text[]) const
   size_t len;
   unsigned char *bytes = const_cast<unsigned char *>(
 	reinterpret_cast<const unsigned char *>(text));
-  const std::unique_ptr<unsigned char, decltype(internal::freepqmem)*> ptr{
+  const std::unique_ptr<unsigned char, void (*)(unsigned char *)> ptr{
     PQunescapeBytea(bytes, &len),
-    internal::freepqmem};
+    internal::freepqmem_templated<unsigned char>};
   return std::string{ptr.get(), ptr.get() + len};
 }
 
@@ -837,13 +846,11 @@ std::string pqxx::connection::esc_like(
 
 namespace
 {
-#if defined(_WIN32) || defined(HAVE_POLL)
 // Convert a timeval to milliseconds, or -1 if no timeval is given.
-inline int tv_milliseconds(timeval *tv = nullptr)
+[[maybe_unused]] constexpr int tv_milliseconds(timeval *tv = nullptr)
 {
   return tv ? int(tv->tv_sec * 1000 + tv->tv_usec/1000) : -1;
 }
-#endif
 
 
 /// Wait for an fd to become free for reading/writing.  Optional timeout.
@@ -857,7 +864,7 @@ void wait_fd(int fd, bool forwrite=false, timeval *tv=nullptr)
   WSAPOLLFD fdarray{SOCKET(fd), events, 0};
   WSAPoll(&fdarray, 1, tv_milliseconds(tv));
   // TODO: Check for errors.
-#elif defined(HAVE_POLL)
+#elif defined(PQXX_HAVE_POLL)
   const short events = short(
         POLLERR|POLLHUP|POLLNVAL | (forwrite?POLLOUT:POLLIN));
   pollfd pfd{fd, events, 0};

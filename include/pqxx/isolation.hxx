@@ -22,7 +22,7 @@ namespace pqxx
 /** No, this is not an isolation level.  So it really doesn't belong here.
  * But it's not really worth a separate header.
  */
-enum readwrite_policy
+enum class write_policy
 {
   read_only,
   read_write
@@ -71,32 +71,6 @@ enum isolation_level
   serializable,
 };
 } // namespace pqxx
-
-
-namespace pqxx::internal
-{
-template<pqxx::isolation_level isolation, pqxx::readwrite_policy rw>
-constexpr const char *begin_cmd = nullptr;
-
-template<>
-constexpr const char *begin_cmd<read_committed, read_write> =
-	"BEGIN";
-template<>
-constexpr const char *begin_cmd<read_committed, read_only> =
-	"BEGIN READ ONLY";
-template<>
-constexpr const char *begin_cmd<repeatable_read, read_write> =
-	"BEGIN ISOLATION LEVEL REPEATABLE READ";
-template<>
-constexpr const char *begin_cmd<repeatable_read, read_only> =
-	"BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY";
-template<>
-constexpr const char *begin_cmd<serializable, read_write> =
-	"BEGIN ISOLATION LEVEL SERIALIZABLE";
-template<>
-constexpr const char *begin_cmd<serializable, read_only> =
-	"BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY";
-} // namespace pqxx::internal
 
 #include "pqxx/compiler-internal-post.hxx"
 #endif
